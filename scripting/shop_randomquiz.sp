@@ -45,6 +45,7 @@ ArrayList g_arrScienceQuestions;
 ArrayList g_arrProgrammingQuestions;
 ArrayList g_arrGeneralQuestions;
 bool g_bConfigLoaded = false;
+bool g_bQuestionAnswered = false;
 
 Handle g_hCookieEnabled;
 Handle g_hCookieMenuOnly;
@@ -504,7 +505,7 @@ void StartNewQuestion()
         return;
     
     StopCurrentQuestion();
-    
+    g_bQuestionAnswered = false;
     g_iCorrectClient = -1;
     g_fTimeout = GetGameTime() + g_cvTimeout.FloatValue;
     g_sCurrentAnswer[0] = '\0';
@@ -655,6 +656,12 @@ char[] GetDifficultyName(int difficulty)
 void ProcessCorrectAnswer(int client)
 {
     g_iCorrectClient = client;
+
+    if(g_bQuestionAnswered)
+    {
+        CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
+        return;
+    }
     
     if(g_hTimeoutTimer != null)
     {
@@ -1219,11 +1226,12 @@ public Action Timer_QuestionTimeout(Handle timer)
 {
     g_hTimeoutTimer = null;
     
-    if(g_iCorrectClient == -1)
+    if(!g_bQuestionAnswered && g_iCorrectClient == -1)
     {
         CPrintToChatAll("{lightblue}[Quiz]{default} Time's up! No one answered. Answer was: {orange}%s", g_sCurrentAnswer);
     }
     
+    g_bQuestionAnswered = false;
     g_hQuestionTimer = CreateTimer(g_cvQuestionInterval.FloatValue, Timer_NextQuestion, _, TIMER_FLAG_NO_MAPCHANGE);
     return Plugin_Stop;
 }
@@ -1240,6 +1248,12 @@ public Action Command_Say(int client, const char[] command, int argc)
     if(!g_cvEnabled.BoolValue || !IsClientInGame(client) || IsChatTrigger() || 
        g_iCorrectClient != -1 || GetGameTime() > g_fTimeout)
         return Plugin_Continue;
+
+    if(g_bQuestionAnswered || g_iCorrectClient != -1)
+    {
+        CPrintToChat(client, "{lightblue}[Quiz]{default} Someone already answered this question!");
+        return Plugin_Continue;
+    }
     
     if(g_iAttempts[client] >= g_cvMaxAttempts.IntValue)
     {
