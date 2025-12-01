@@ -655,13 +655,13 @@ char[] GetDifficultyName(int difficulty)
 
 void ProcessCorrectAnswer(int client)
 {
-    g_iCorrectClient = client;
-
     if(g_bQuestionAnswered)
     {
         CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
         return;
     }
+    g_iCorrectClient = client;
+    g_bQuestionAnswered = true;
     
     if(g_hTimeoutTimer != null)
     {
@@ -841,11 +841,19 @@ public int MenuHandler_Question(Menu menu, MenuAction action, int client, int pa
         
         int selectedIndex = StringToInt(info);
         
+        // Add this check - question already answered
+        if(g_bQuestionAnswered || g_iCorrectClient != -1)
+        {
+            CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
+            return 0;
+        }
+        
         if(g_iMenuPlayersAnswered[client] > 0)
         {
             CPrintToChat(client, "{aqua}[Quiz]{default} You already answered this question!");
             return 0;
         }
+        
         if(selectedIndex == g_iMenuCorrectIndex)
         {
             g_iMenuPlayersAnswered[client] = 1;
