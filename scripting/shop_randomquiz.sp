@@ -824,6 +824,11 @@ public int MenuHandler_Question(Menu menu, MenuAction action, int client, int pa
 {
     if(action == MenuAction_Select)
     {
+        if(GetGameTime() > g_fTimeout)
+        {
+            CPrintToChat(client, "{aqua}[Quiz]{default} Time's up! Question has expired.");
+            return 0;
+        }
         char info[16];
         menu.GetItem(param2, info, sizeof(info));
         
@@ -1256,6 +1261,20 @@ public Action Command_Say(int client, const char[] command, int argc)
     if(!g_cvEnabled.BoolValue || !IsClientInGame(client) || IsChatTrigger() || 
        g_iCorrectClient != -1 || GetGameTime() > g_fTimeout)
         return Plugin_Continue;
+
+    if(GetGameTime() > g_fTimeout)
+    {
+        char text[256];
+        GetCmdArgString(text, sizeof(text));
+        StripQuotes(text);
+        TrimString(text);
+        
+        if(StrContains(text, "!") != 0 && StrContains(text, "/") != 0)
+        {
+            CPrintToChat(client, "{aqua}[Quiz]{default} Time's up! Question has expired.");
+        }
+        return Plugin_Continue;
+    }
 
     if(g_bQuestionAnswered || g_iCorrectClient != -1)
     {
