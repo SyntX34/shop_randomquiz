@@ -1230,7 +1230,7 @@ void StopCurrentQuestion()
     
     if(g_hTimeoutTimer != null)
     {
-        KillTimer(g_hTimeoutTimer);
+        CloseHandle(g_hTimeoutTimer);
         g_hTimeoutTimer = null;
     }
 }
