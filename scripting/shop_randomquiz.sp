@@ -9,7 +9,7 @@
 #pragma newdecls required
 
 #define PLUGIN_NAME "Random Quiz"
-#define PLUGIN_VERSION "5.0.0"
+#define PLUGIN_VERSION "5.0.1"
 #define CONFIG_PATH "configs/random_quiz/questions.cfg"
 
 ConVar g_cvEnabled;
@@ -526,21 +526,41 @@ void StartNewQuestion()
         g_iMenuPlayersAnswered[i] = 0;
     }
     
-    QuestionType qType = GetRandomQuestionType();
     QuestionMode qMode = GetRandomQuestionMode();
     
     bool questionGenerated = false;
     
-    switch(qType)
+    if(qMode == MODE_MENU)
     {
-        case TYPE_MATH:
-            questionGenerated = GenerateMathQuestion();
-        case TYPE_SCIENCE:
-            questionGenerated = GenerateScienceQuestion();
-        case TYPE_PROGRAMMING:
-            questionGenerated = GenerateProgrammingQuestion();
-        case TYPE_GENERAL:
-            questionGenerated = GenerateGeneralQuestion();
+        QuestionType qType = GetRandomQuestionType(true);
+        
+        switch(qType)
+        {
+            case TYPE_SCIENCE:
+                questionGenerated = GenerateScienceQuestion();
+            case TYPE_PROGRAMMING:
+                questionGenerated = GenerateProgrammingQuestion();
+            case TYPE_GENERAL:
+                questionGenerated = GenerateGeneralQuestion();
+            default:
+                questionGenerated = GenerateMathQuestion();
+        }
+    }
+    else
+    {
+        QuestionType qType = GetRandomQuestionType(false);
+        
+        switch(qType)
+        {
+            case TYPE_MATH:
+                questionGenerated = GenerateMathQuestion();
+            case TYPE_SCIENCE:
+                questionGenerated = GenerateScienceQuestion();
+            case TYPE_PROGRAMMING:
+                questionGenerated = GenerateProgrammingQuestion();
+            case TYPE_GENERAL:
+                questionGenerated = GenerateGeneralQuestion();
+        }
     }
     
     if(!questionGenerated || g_sCurrentAnswer[0] == '\0')
@@ -549,7 +569,6 @@ void StartNewQuestion()
     }
     
     g_iCurrentReward = CalculateReward(g_iCurrentDifficulty);
-    
     g_iQuestionCounter++;
     
     if(qMode == MODE_MENU && PrepareMenuQuestion())
@@ -568,56 +587,85 @@ void StartNewQuestion()
                      g_iQuestionCounter, g_sCurrentQuestion, g_sCurrentAnswer, 
                      g_iCurrentDifficulty, g_iCurrentReward, g_bMenuQuestion ? "Menu" : "Chat");
     }
+    
     DisplayQuestionToPlayers();
     
     float timeout = g_bMenuQuestion ? g_cvMaxMenuTime.FloatValue : g_cvTimeout.FloatValue;
     g_hTimeoutTimer = CreateTimer(timeout, Timer_QuestionTimeout, _, TIMER_FLAG_NO_MAPCHANGE);
 }
 
-QuestionType GetRandomQuestionType()
+QuestionType GetRandomQuestionType(bool forMenu = false)
 {
+    if(forMenu)
+    {
+        int availableCategories = 0;
+        if(g_arrScienceQuestions.Length > 0) availableCategories++;
+        if(g_arrProgrammingQuestions.Length > 0) availableCategories++;
+        if(g_arrGeneralQuestions.Length > 0) availableCategories++;
+        
+        if(availableCategories == 0)
+            return TYPE_MATH;
+        
+        int categoryIndex = GetRandomInt(1, availableCategories);
+        int currentCategory = 0;
+        
+        if(g_arrScienceQuestions.Length > 0)
+        {
+            currentCategory++;
+            if(currentCategory == categoryIndex) return TYPE_SCIENCE;
+        }
+        
+        if(g_arrProgrammingQuestions.Length > 0)
+        {
+            currentCategory++;
+            if(currentCategory == categoryIndex) return TYPE_PROGRAMMING;
+        }
+        
+        if(g_arrGeneralQuestions.Length > 0)
+        {
+            currentCategory++;
+            if(currentCategory == categoryIndex) return TYPE_GENERAL;
+        }
+        
+        return TYPE_MATH;
+    }
     int random = GetRandomInt(1, 100);
     
     if(random <= 70) 
         return TYPE_MATH;
     
-    if(g_bConfigLoaded)
+    int availableCategories = 1;
+    
+    if(g_arrScienceQuestions.Length > 0) availableCategories++;
+    if(g_arrProgrammingQuestions.Length > 0) availableCategories++;
+    if(g_arrGeneralQuestions.Length > 0) availableCategories++;
+    
+    int nonMathCategories = availableCategories - 1;
+    
+    if(nonMathCategories > 0)
     {
-        int availableCategories = 1; // Math is always available
+        int categoryIndex = GetRandomInt(1, nonMathCategories);
+        int currentCategory = 0;
         
-        if(g_arrScienceQuestions.Length > 0) availableCategories++;
-        if(g_arrProgrammingQuestions.Length > 0) availableCategories++;
-        if(g_arrGeneralQuestions.Length > 0) availableCategories++;
-        
-        // Remove math from calculation for non-math categories
-        int nonMathCategories = availableCategories - 1;
-        
-        if(nonMathCategories > 0)
+        if(g_arrScienceQuestions.Length > 0)
         {
-            int categoryIndex = GetRandomInt(1, nonMathCategories);
-            int currentCategory = 0;
-            
-            if(g_arrScienceQuestions.Length > 0)
-            {
-                currentCategory++;
-                if(currentCategory == categoryIndex) return TYPE_SCIENCE;
-            }
-            
-            if(g_arrProgrammingQuestions.Length > 0)
-            {
-                currentCategory++;
-                if(currentCategory == categoryIndex) return TYPE_PROGRAMMING;
-            }
-            
-            if(g_arrGeneralQuestions.Length > 0)
-            {
-                currentCategory++;
-                if(currentCategory == categoryIndex) return TYPE_GENERAL;
-            }
+            currentCategory++;
+            if(currentCategory == categoryIndex) return TYPE_SCIENCE;
+        }
+        
+        if(g_arrProgrammingQuestions.Length > 0)
+        {
+            currentCategory++;
+            if(currentCategory == categoryIndex) return TYPE_PROGRAMMING;
+        }
+        
+        if(g_arrGeneralQuestions.Length > 0)
+        {
+            currentCategory++;
+            if(currentCategory == categoryIndex) return TYPE_GENERAL;
         }
     }
     
-    // Fallback to math
     return TYPE_MATH;
 }
 
@@ -695,8 +743,6 @@ void ProcessCorrectAnswer(int client)
     
     g_hQuestionTimer = CreateTimer(g_cvQuestionInterval.FloatValue, Timer_NextQuestion, _, TIMER_FLAG_NO_MAPCHANGE);
 }
-
-// ===== END OF MISSING FUNCTIONS =====
 
 QuestionMode GetRandomQuestionMode()
 {
@@ -783,12 +829,18 @@ void ShowQuestionMenu(int client)
 {
     if(!g_bMenuQuestion || g_iMenuCorrectIndex == -1)
         return;
+    
+    Menu dummy = new Menu(MenuHandler_Dummy);
+    dummy.Display(client, 0);
+    delete dummy;
+    
     char cleanQuestion[256];
     Menu menu = new Menu(MenuHandler_Question);
     StripColors(g_sCurrentQuestion, cleanQuestion, sizeof(cleanQuestion));
-    menu.SetTitle("Quiz Question #%d\n \n%s\n \nDifficulty: %s\nReward: %d credits\n \n", 
+    menu.SetTitle("Quiz Question #%d\n \n%s\n \nDifficulty: %s\nReward: %d credits\nTime: %.0fs\n \n", 
              g_iQuestionCounter, cleanQuestion, 
-             GetDifficultyName(g_iCurrentDifficulty), g_iCurrentReward);
+             GetDifficultyName(g_iCurrentDifficulty), g_iCurrentReward,
+             g_fTimeout - GetGameTime());
     
     int options = g_cvMenuOptions.IntValue;
     if(options > 4) options = 4;
@@ -798,26 +850,25 @@ void ShowQuestionMenu(int client)
         if(strlen(g_sMenuAnswers[i]) > 0)
         {
             char display[256];
-            Format(display, sizeof(display), "%s", g_sMenuAnswers[i]);
+            char cleanAnswer[256];
+            StripColors(g_sMenuAnswers[i], cleanAnswer, sizeof(cleanAnswer));
             
-            // Add indicator if already answered
-            if(g_iMenuPlayersAnswered[client] > 0)
-            {
-                Format(display, sizeof(display), "%s %s", 
-                      g_iMenuPlayersAnswered[client] == 1 ? "✓" : "", 
-                      g_sMenuAnswers[i]);
-            }
+            Format(display, sizeof(display), "%d. %s", i + 1, cleanAnswer);
             
             char info[16];
             Format(info, sizeof(info), "%d", i);
             menu.AddItem(info, display);
         }
     }
-    menu.AddItem("skip", "I don't know / Skip");
-    menu.AddItem("close", "Close Menu (You can still answer)");
+    menu.AddItem("exit", "0. Exit / Close Menu", ITEMDRAW_DEFAULT);
     
-    menu.ExitButton = false;
-    menu.Display(client, MENU_TIME_FOREVER);
+    menu.ExitButton = true;
+    menu.Display(client, RoundToCeil(g_fTimeout - GetGameTime()));
+}
+
+public int MenuHandler_Dummy(Menu menu, MenuAction action, int client, int param2)
+{
+    return 0;
 }
 
 public int MenuHandler_Question(Menu menu, MenuAction action, int client, int param2)
@@ -829,24 +880,17 @@ public int MenuHandler_Question(Menu menu, MenuAction action, int client, int pa
             CPrintToChat(client, "{aqua}[Quiz]{default} Time's up! Question has expired.");
             return 0;
         }
+        
         char info[16];
         menu.GetItem(param2, info, sizeof(info));
         
-        if(StrEqual(info, "skip"))
+        if(StrEqual(info, "exit"))
         {
-            CPrintToChat(client, "{aqua}[Quiz]{default} You chose to skip this question.");
-            g_iMenuPlayersAnswered[client] = -1;
-            return 0;
-        }
-        else if(StrEqual(info, "close"))
-        {
-            CPrintToChat(client, "{aqua}[Quiz]{default} Menu closed. You can still answer in chat!");
+            CPrintToChat(client, "{aqua}[Quiz]{default} Menu closed. Question is still active!");
             return 0;
         }
         
         int selectedIndex = StringToInt(info);
-        
-        // Add this check - question already answered
         if(g_bQuestionAnswered || g_iCorrectClient != -1)
         {
             CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
@@ -868,7 +912,16 @@ public int MenuHandler_Question(Menu menu, MenuAction action, int client, int pa
         {
             CPrintToChat(client, "{aqua}[Quiz]{default} Wrong answer! You cannot answer this question anymore.");
             g_iMenuPlayersAnswered[client] = 2;
-            return 0;
+        }
+    }
+    else if(action == MenuAction_Cancel)
+    {
+        if(param2 == MenuCancel_Exit || param2 == MenuCancel_Timeout)
+        {
+            if(param2 == MenuCancel_Exit)
+            {
+                CPrintToChat(client, "{aqua}[Quiz]{default} Menu closed. Question is still active!");
+            }
         }
     }
     else if(action == MenuAction_End)
@@ -1242,6 +1295,15 @@ public Action Timer_QuestionTimeout(Handle timer)
     if(!g_bQuestionAnswered && g_iCorrectClient == -1)
     {
         CPrintToChatAll("{lightblue}[Quiz]{default} Time's up! No one answered. Answer was: {orange}%s", g_sCurrentAnswer);
+    }
+    for(int i = 1; i <= MaxClients; i++)
+    {
+        if(IsClientInGame(i) && !IsFakeClient(i))
+        {
+            Menu dummy = new Menu(MenuHandler_Dummy);
+            dummy.Display(i, 0);
+            delete dummy;
+        }
     }
     
     g_bQuestionAnswered = false;
