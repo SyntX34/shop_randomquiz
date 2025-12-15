@@ -1283,19 +1283,20 @@ void StopCurrentQuestion()
     
     if(g_hTimeoutTimer != null)
     {
-        CloseHandle(g_hTimeoutTimer);
+        KillTimer(g_hTimeoutTimer);
         g_hTimeoutTimer = null;
     }
 }
 
 public Action Timer_QuestionTimeout(Handle timer)
 {
-    g_hTimeoutTimer = null;
+    g_hTimeoutTimer = null; 
     
     if(!g_bQuestionAnswered && g_iCorrectClient == -1)
     {
         CPrintToChatAll("{lightblue}[Quiz]{default} Time's up! No one answered. Answer was: {orange}%s", g_sCurrentAnswer);
     }
+    
     for(int i = 1; i <= MaxClients; i++)
     {
         if(IsClientInGame(i) && !IsFakeClient(i))
