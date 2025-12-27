@@ -11,6 +11,10 @@
 #define PLUGIN_NAME "Random Quiz"
 #define PLUGIN_VERSION "5.0.1"
 #define CONFIG_PATH "configs/random_quiz/questions.cfg"
+#define MODE_ALL 0
+#define MODE_MENUONLY 1
+#define MODE_CHATONLY 2
+#define MODE_DISABLED 3
 
 ConVar g_cvEnabled;
 ConVar g_cvMinCredits;
@@ -49,6 +53,7 @@ bool g_bQuestionAnswered = false;
 
 Handle g_hCookieEnabled;
 Handle g_hCookieMenuOnly;
+Handle g_hCookieChatOnly;
 
 enum struct ConfigQuestion {
     char question[256];
@@ -117,6 +122,7 @@ public void OnPluginStart()
     
     g_hCookieEnabled = RegClientCookie("randomquiz_enabled", "Enable/disable quiz questions", CookieAccess_Protected);
     g_hCookieMenuOnly = RegClientCookie("randomquiz_menuonly", "Only show menu questions", CookieAccess_Protected);
+    g_hCookieChatOnly = RegClientCookie("randomquiz_chatonly", "Only show chat questions", CookieAccess_Protected);
     
     SetCookieMenuItem(CookieMenuHandler_QuizSettings, 0, "Quiz Settings");
     g_arrScienceQuestions = new ArrayList(sizeof(ConfigQuestion));
@@ -163,6 +169,11 @@ public void OnClientCookiesCached(int client)
     {
         SetClientCookie(client, g_hCookieMenuOnly, "0");
     }
+    GetClientCookie(client, g_hCookieChatOnly, value, sizeof(value));
+    if(strlen(value) == 0)
+    {
+        SetClientCookie(client, g_hCookieChatOnly, "0");
+    }
 }
 
 public void CookieMenuHandler_QuizSettings(int client, CookieMenuAction action, any info, char[] buffer, int maxlen)
@@ -194,23 +205,39 @@ void ShowSettingsMenu(int client)
     Menu menu = new Menu(MenuHandler_Settings);
     menu.SetTitle("Quiz Settings\n \nConfigure your quiz preferences:");
     
-    char enabledValue[8], menuOnlyValue[8];
+    char enabledValue[8], menuOnlyValue[8], chatOnlyValue[8];
     GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
     GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+    GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
     
     bool isEnabled = StringToInt(enabledValue) != 0;
     bool menuOnly = StringToInt(menuOnlyValue) != 0;
+    bool chatOnly = StringToInt(chatOnlyValue) != 0;
+    int currentMode = MODE_ALL;
+    if(!isEnabled)
+        currentMode = MODE_DISABLED;
+    else if(menuOnly)
+        currentMode = MODE_MENUONLY;
+    else if(chatOnly)
+        currentMode = MODE_CHATONLY;
     
     char display[64];
     char cleanDisplay[64];
     Format(display, sizeof(display), "Quiz: %s", isEnabled ? "{green}Enabled" : "{red}Disabled");
     StripColors(display, cleanDisplay, sizeof(cleanDisplay));
     menu.AddItem("toggle", cleanDisplay);
+    char modeDesc[32];
+    switch(currentMode)
+    {
+        case MODE_ALL: Format(modeDesc, sizeof(modeDesc), "{aqua}Chat & Menu");
+        case MODE_MENUONLY: Format(modeDesc, sizeof(modeDesc), "{orange}Menu Only");
+        case MODE_CHATONLY: Format(modeDesc, sizeof(modeDesc), "{lime}Chat Only");
+        case MODE_DISABLED: Format(modeDesc, sizeof(modeDesc), "{red}Disabled");
+    }
     
-    Format(display, sizeof(display), "Question Mode: %s", menuOnly ? "{orange}Menu Only" : "{aqua}Chat & Menu");
+    Format(display, sizeof(display), "Question Mode: %s", modeDesc);
     StripColors(display, cleanDisplay, sizeof(cleanDisplay));
     menu.AddItem("mode", cleanDisplay);
-
     menu.AddItem("info", "Information & Help");
     
     menu.ExitButton = true;
@@ -239,24 +266,60 @@ public int MenuHandler_Settings(Menu menu, MenuAction action, int client, int pa
             }
             else
             {
-                CPrintToChat(client, "{aqua}[Quiz]{default} You have {green}enabled{default} quiz questions.");
+                SetClientCookie(client, g_hCookieMenuOnly, "0");
+                SetClientCookie(client, g_hCookieChatOnly, "0");
+                CPrintToChat(client, "{aqua}[Quiz]{default} You have {green}enabled{default} quiz questions. Mode: {aqua}Chat & Menu");
             }
         }
         else if(StrEqual(info, "mode"))
         {
-            char value[8];
-            GetClientCookie(client, g_hCookieMenuOnly, value, sizeof(value));
-            bool menuOnly = StringToInt(value) != 0;
+            char enabledValue[8], menuOnlyValue[8], chatOnlyValue[8];
+            GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+            GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+            GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
             
-            SetClientCookie(client, g_hCookieMenuOnly, menuOnly ? "0" : "1");
+            bool isEnabled = StringToInt(enabledValue) != 0;
+            bool menuOnly = StringToInt(menuOnlyValue) != 0;
+            bool chatOnly = StringToInt(chatOnlyValue) != 0;
+            int currentMode = MODE_ALL;
+            if(!isEnabled)
+                currentMode = MODE_DISABLED;
+            else if(menuOnly)
+                currentMode = MODE_MENUONLY;
+            else if(chatOnly)
+                currentMode = MODE_CHATONLY;
             
-            if(menuOnly)
+            int nextMode = (currentMode + 1) % (MODE_DISABLED + 1);
+            switch(nextMode)
             {
-                CPrintToChat(client, "{aqua}[Quiz]{default} You will now see {aqua}both chat and menu{default} questions.");
-            }
-            else
-            {
-                CPrintToChat(client, "{aqua}[Quiz]{default} You will now see {orange}only menu{default} questions.");
+                case MODE_ALL:
+                {
+                    SetClientCookie(client, g_hCookieEnabled, "1");
+                    SetClientCookie(client, g_hCookieMenuOnly, "0");
+                    SetClientCookie(client, g_hCookieChatOnly, "0");
+                    CPrintToChat(client, "{aqua}[Quiz]{default} Mode set to: {aqua}Chat & Menu{default} (all questions)");
+                }
+                case MODE_MENUONLY:
+                {
+                    SetClientCookie(client, g_hCookieEnabled, "1");
+                    SetClientCookie(client, g_hCookieMenuOnly, "1");
+                    SetClientCookie(client, g_hCookieChatOnly, "0");
+                    CPrintToChat(client, "{aqua}[Quiz]{default} Mode set to: {orange}Menu Only{default} (no chat questions)");
+                }
+                case MODE_CHATONLY:
+                {
+                    SetClientCookie(client, g_hCookieEnabled, "1");
+                    SetClientCookie(client, g_hCookieMenuOnly, "0");
+                    SetClientCookie(client, g_hCookieChatOnly, "1");
+                    CPrintToChat(client, "{aqua}[Quiz]{default} Mode set to: {lime}Chat Only{default} (no menu questions)");
+                }
+                case MODE_DISABLED:
+                {
+                    SetClientCookie(client, g_hCookieEnabled, "0");
+                    SetClientCookie(client, g_hCookieMenuOnly, "0");
+                    SetClientCookie(client, g_hCookieChatOnly, "0");
+                    CPrintToChat(client, "{aqua}[Quiz]{default} Mode set to: {red}Disabled{default} (no questions)");
+                }
             }
         }
         else if(StrEqual(info, "info"))
@@ -264,7 +327,7 @@ public int MenuHandler_Settings(Menu menu, MenuAction action, int client, int pa
             ShowInfoMenu(client);
             return 0;
         }
-    
+        
         ShowSettingsMenu(client);
     }
     else if(action == MenuAction_End)
@@ -281,11 +344,12 @@ void ShowInfoMenu(int client)
     menu.SetTitle("Quiz Information\n \nAbout Random Quiz:\n \n");
     
     menu.AddItem("line1", "• Questions appear every 2-3 minutes", ITEMDRAW_DISABLED);
-    menu.AddItem("line2", "• Answer in chat or select menu option", ITEMDRAW_DISABLED);
-    menu.AddItem("line3", "• Earn credits for correct answers", ITEMDRAW_DISABLED);
-    menu.AddItem("line4", "• Difficulty affects reward amount", ITEMDRAW_DISABLED);
-    menu.AddItem("line5", "• Math questions are auto-generated", ITEMDRAW_DISABLED);
-    menu.AddItem("line6", "• Other questions from config file", ITEMDRAW_DISABLED);
+    menu.AddItem("line2", "• Four modes: Chat & Menu, Menu Only,", ITEMDRAW_DISABLED);
+    menu.AddItem("line3", "  Chat Only, or Disabled", ITEMDRAW_DISABLED);
+    menu.AddItem("line4", "• Earn credits for correct answers", ITEMDRAW_DISABLED);
+    menu.AddItem("line5", "• Difficulty affects reward amount", ITEMDRAW_DISABLED);
+    menu.AddItem("line6", "• Math questions are auto-generated", ITEMDRAW_DISABLED);
+    menu.AddItem("line7", "• Other questions from config file", ITEMDRAW_DISABLED);
     
     menu.AddItem("back", "Back to Settings");
     
@@ -318,22 +382,31 @@ public int MenuHandler_Info(Menu menu, MenuAction action, int client, int param2
     return 0;
 }
 
+/*
 bool IsQuizEnabledForClient(int client)
 {
     if(!IsClientInGame(client) || IsFakeClient(client))
         return false;
     
-    char value[8];
-    GetClientCookie(client, g_hCookieEnabled, value, sizeof(value));
-    return StringToInt(value) != 0;
+    char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
+    GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+    GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
+    GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+    if(StringToInt(enabledValue) == 0)
+        return false;
+    
+    return true;
 }
+*/
 
+/*
 bool IsMenuOnlyForClient(int client)
 {
     char value[8];
     GetClientCookie(client, g_hCookieMenuOnly, value, sizeof(value));
     return StringToInt(value) != 0;
 }
+*/
 
 public void OnMapStart()
 {
@@ -456,6 +529,7 @@ public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 {
     StopCurrentQuestion();
     g_iQuestionCounter = 0;
+    CPrintToChatAll("{aqua}[Quiz]{default} You can disable quiz questions or change modes using {lightblue}/quizsettings{default} command.");
     
     for(int i = 1; i <= MaxClients; i++)
     {
@@ -497,6 +571,34 @@ public Action Timer_StartFirstQuestion(Handle timer)
         StartNewQuestion();
     }
     return Plugin_Stop;
+}
+
+bool ShouldSeeChatQuestions(int client)
+{
+    if(!IsClientInGame(client) || IsFakeClient(client))
+        return false;
+    
+    char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
+    GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+    GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
+    GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+    if(StringToInt(enabledValue) == 0 || StringToInt(menuOnlyValue) != 0)
+        return false;
+    return true;
+}
+
+bool ShouldSeeMenuQuestions(int client)
+{
+    if(!IsClientInGame(client) || IsFakeClient(client))
+        return false;
+    
+    char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
+    GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+    GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
+    GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+    if(StringToInt(enabledValue) == 0 || StringToInt(chatOnlyValue) != 0)
+        return false;
+    return true;
 }
 
 void StartNewQuestion()
@@ -746,24 +848,41 @@ void ProcessCorrectAnswer(int client)
 
 QuestionMode GetRandomQuestionMode()
 {
-    bool anyMenuOnly = false;
-    int enabledPlayers = 0;
+    int chatPlayers = 0;
+    int menuPlayers = 0;
+    int allPlayers = 0;
     
     for(int i = 1; i <= MaxClients; i++)
     {
-        if(IsClientInGame(i) && !IsFakeClient(i) && IsQuizEnabledForClient(i))
+        if(IsClientInGame(i) && !IsFakeClient(i))
         {
-            enabledPlayers++;
-            if(IsMenuOnlyForClient(i))
+            char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
+            GetClientCookie(i, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+            GetClientCookie(i, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
+            GetClientCookie(i, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+            
+            if(StringToInt(enabledValue) != 0)
             {
-                anyMenuOnly = true;
+                allPlayers++;
+                
+                if(StringToInt(chatOnlyValue) != 0)
+                    chatPlayers++;
+                else if(StringToInt(menuOnlyValue) != 0)
+                    menuPlayers++;
+                else
+                {
+                    chatPlayers++;
+                    menuPlayers++;
+                }
             }
         }
     }
-    if(anyMenuOnly && enabledPlayers > 0)
-    {
+    if(allPlayers == 0)
+        return MODE_CHAT;
+    if(chatPlayers > 0 && menuPlayers == 0)
+        return MODE_CHAT;
+    if(menuPlayers > 0 && chatPlayers == 0)
         return MODE_MENU;
-    }
     int random = GetRandomInt(1, 100);
     if(random <= g_cvMenuPercentage.IntValue)
     {
@@ -802,24 +921,27 @@ void DisplayQuestionToPlayers()
         }
     }
     
-    // Display to all players
     for(int i = 1; i <= MaxClients; i++)
     {
-        if(IsClientInGame(i) && !IsFakeClient(i) && IsQuizEnabledForClient(i))
+        if(IsClientInGame(i) && !IsFakeClient(i))
         {
             if(g_bMenuQuestion)
             {
-                // Show menu question
-                ShowQuestionMenu(i);
+                if(ShouldSeeMenuQuestions(i))
+                {
+                    ShowQuestionMenu(i);
+                }
             }
             else
             {
-                // Show chat question
-                CPrintToChat(i, "{aqua}[Quiz]{default} Question {lightblue}#%d{default}: {magenta}%s", 
-                           g_iQuestionCounter, g_sCurrentQuestion);
-                CPrintToChat(i, "{aqua}[Quiz]{default} Time: {fullred}%.0f{default}s | Difficulty: %s%s{default} | Reward: %s%d credits", 
-                           g_cvTimeout.FloatValue, difficultyColor, GetDifficultyName(g_iCurrentDifficulty), rewardColor, g_iCurrentReward);
-                CPrintToChat(i, "{aqua}[Quiz]{default} Type your answer in chat! {olive}(/quizmenu to disable)");
+                if(ShouldSeeChatQuestions(i))
+                {
+                    CPrintToChat(i, "{aqua}[Quiz]{default} Question {lightblue}#%d{default}: {magenta}%s", 
+                               g_iQuestionCounter, g_sCurrentQuestion);
+                    CPrintToChat(i, "{aqua}[Quiz]{default} Time: {fullred}%.0f{default}s | Difficulty: %s%s{default} | Reward: %s%d credits", 
+                               g_cvTimeout.FloatValue, difficultyColor, GetDifficultyName(g_iCurrentDifficulty), rewardColor, g_iCurrentReward);
+                    CPrintToChat(i, "{aqua}[Quiz]{default} Type your answer in chat! {olive}(/quizmenu to change settings)");
+                }
             }
         }
     }
