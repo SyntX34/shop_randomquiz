@@ -9,7 +9,7 @@
 #pragma newdecls required
 
 #define PLUGIN_NAME "Random Quiz"
-#define PLUGIN_VERSION "5.0.1"
+#define PLUGIN_VERSION "5.0.2"
 #define CONFIG_PATH "configs/random_quiz/questions.cfg"
 #define MODE_ALL 0
 #define MODE_MENUONLY 1
@@ -29,6 +29,7 @@ ConVar g_cvAllowCaseSensitive;
 ConVar g_cvMenuPercentage;
 ConVar g_cvMenuOptions;
 ConVar g_cvMaxMenuTime;
+ConVar g_cvQuestionTypeDefault;
 
 Handle g_hQuestionTimer;
 Handle g_hTimeoutTimer;
@@ -41,19 +42,22 @@ int g_iQuestionCounter = 0;
 int g_iCurrentReward = 0;
 int g_iCurrentDifficulty = 1;
 bool g_bMenuQuestion = false;
-char g_sMenuAnswers[4][128];
+char g_sMenuAnswers[6][128];
 int g_iMenuCorrectIndex = -1;
 int g_iMenuPlayersAnswered[MAXPLAYERS+1];
+QuestionType g_iCurrentQuestionType;
 
 ArrayList g_arrScienceQuestions;
 ArrayList g_arrProgrammingQuestions;
 ArrayList g_arrGeneralQuestions;
+ArrayList g_arrMathQuestions;
 bool g_bConfigLoaded = false;
 bool g_bQuestionAnswered = false;
 
 Handle g_hCookieEnabled;
 Handle g_hCookieMenuOnly;
 Handle g_hCookieChatOnly;
+Handle g_hCookieQuestionTypes;
 
 enum struct ConfigQuestion {
     char question[256];
@@ -107,6 +111,7 @@ public void OnPluginStart()
     g_cvMenuPercentage = CreateConVar("sm_randomquiz_menu_percentage", "40", "Percentage of questions that will be menu-based (0-100)", _, true, 0.0, true, 100.0);
     g_cvMenuOptions = CreateConVar("sm_randomquiz_menu_options", "4", "Number of options in menu questions (2-6)", _, true, 2.0, true, 6.0);
     g_cvMaxMenuTime = CreateConVar("sm_randomquiz_max_menu_time", "15.0", "Maximum time for menu questions", _, true, 5.0, true, 30.0);
+    g_cvQuestionTypeDefault = CreateConVar("sm_randomquiz_default_types", "15", "Default question types enabled (bitmask: 1=Math, 2=Science, 4=Programming, 8=General)", _, true, 1.0, true, 15.0);
     
     AutoExecConfig(true, "random_quiz");
     
@@ -123,33 +128,24 @@ public void OnPluginStart()
     g_hCookieEnabled = RegClientCookie("randomquiz_enabled", "Enable/disable quiz questions", CookieAccess_Protected);
     g_hCookieMenuOnly = RegClientCookie("randomquiz_menuonly", "Only show menu questions", CookieAccess_Protected);
     g_hCookieChatOnly = RegClientCookie("randomquiz_chatonly", "Only show chat questions", CookieAccess_Protected);
+    g_hCookieQuestionTypes = RegClientCookie("randomquiz_types", "Question types enabled (bitmask)", CookieAccess_Protected);
     
     SetCookieMenuItem(CookieMenuHandler_QuizSettings, 0, "Quiz Settings");
     g_arrScienceQuestions = new ArrayList(sizeof(ConfigQuestion));
     g_arrProgrammingQuestions = new ArrayList(sizeof(ConfigQuestion));
     g_arrGeneralQuestions = new ArrayList(sizeof(ConfigQuestion));
+    g_arrMathQuestions = new ArrayList(sizeof(ConfigQuestion));
     
     for(int i = 1; i <= MaxClients; i++)
     {
-        if(IsClientInGame(i))
+        if(IsClientInGame(i) && IsClientConnected(i) && !IsFakeClient(i))
         {
             g_iAttempts[i] = 0;
             g_iMenuPlayersAnswered[i] = 0;
             
             if(AreClientCookiesCached(i))
             {
-                char value[8];
-                GetClientCookie(i, g_hCookieEnabled, value, sizeof(value));
-                if(strlen(value) == 0)
-                {
-                    SetClientCookie(i, g_hCookieEnabled, "1");
-                }
-                
-                GetClientCookie(i, g_hCookieMenuOnly, value, sizeof(value));
-                if(strlen(value) == 0)
-                {
-                    SetClientCookie(i, g_hCookieMenuOnly, "0");
-                }
+                OnClientCookiesCached(i);
             }
         }
     }
@@ -157,7 +153,11 @@ public void OnPluginStart()
 
 public void OnClientCookiesCached(int client)
 {
-    char value[8];
+    if(!IsClientConnected(client) || IsFakeClient(client))
+        return;
+    
+    char value[16];
+    
     GetClientCookie(client, g_hCookieEnabled, value, sizeof(value));
     if(strlen(value) == 0)
     {
@@ -169,10 +169,18 @@ public void OnClientCookiesCached(int client)
     {
         SetClientCookie(client, g_hCookieMenuOnly, "0");
     }
+    
     GetClientCookie(client, g_hCookieChatOnly, value, sizeof(value));
     if(strlen(value) == 0)
     {
         SetClientCookie(client, g_hCookieChatOnly, "0");
+    }
+    
+    GetClientCookie(client, g_hCookieQuestionTypes, value, sizeof(value));
+    if(strlen(value) == 0)
+    {
+        IntToString(g_cvQuestionTypeDefault.IntValue, value, sizeof(value));
+        SetClientCookie(client, g_hCookieQuestionTypes, value);
     }
 }
 
@@ -205,7 +213,7 @@ void ShowSettingsMenu(int client)
     Menu menu = new Menu(MenuHandler_Settings);
     menu.SetTitle("Quiz Settings\n \nConfigure your quiz preferences:");
     
-    char enabledValue[8], menuOnlyValue[8], chatOnlyValue[8];
+    char enabledValue[16], menuOnlyValue[16], chatOnlyValue[16];
     GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
     GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
     GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
@@ -226,6 +234,7 @@ void ShowSettingsMenu(int client)
     Format(display, sizeof(display), "Quiz: %s", isEnabled ? "{green}Enabled" : "{red}Disabled");
     StripColors(display, cleanDisplay, sizeof(cleanDisplay));
     menu.AddItem("toggle", cleanDisplay);
+    
     char modeDesc[32];
     switch(currentMode)
     {
@@ -238,12 +247,43 @@ void ShowSettingsMenu(int client)
     Format(display, sizeof(display), "Question Mode: %s", modeDesc);
     StripColors(display, cleanDisplay, sizeof(cleanDisplay));
     menu.AddItem("mode", cleanDisplay);
+    
+    Format(display, sizeof(display), "Question Types");
+    StripColors(display, cleanDisplay, sizeof(cleanDisplay));
+    menu.AddItem("types", cleanDisplay);
+    
     menu.AddItem("info", "Information & Help");
     
     menu.ExitButton = true;
     menu.ExitBackButton = false;
     menu.Display(client, MENU_TIME_FOREVER);
 }
+
+/*
+bool IsQuizEnabledForClient(int client)
+{
+    if(!IsClientInGame(client) || IsFakeClient(client))
+        return false;
+    
+    char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
+    GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+    GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
+    GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+    if(StringToInt(enabledValue) == 0)
+        return false;
+    
+    return true;
+}
+*/
+
+/*
+bool IsMenuOnlyForClient(int client)
+{
+    char value[8];
+    GetClientCookie(client, g_hCookieMenuOnly, value, sizeof(value));
+    return StringToInt(value) != 0;
+}
+*/
 
 public int MenuHandler_Settings(Menu menu, MenuAction action, int client, int param2)
 {
@@ -254,7 +294,7 @@ public int MenuHandler_Settings(Menu menu, MenuAction action, int client, int pa
         
         if(StrEqual(info, "toggle"))
         {
-            char value[8];
+            char value[16];
             GetClientCookie(client, g_hCookieEnabled, value, sizeof(value));
             bool isEnabled = StringToInt(value) != 0;
             
@@ -273,7 +313,7 @@ public int MenuHandler_Settings(Menu menu, MenuAction action, int client, int pa
         }
         else if(StrEqual(info, "mode"))
         {
-            char enabledValue[8], menuOnlyValue[8], chatOnlyValue[8];
+            char enabledValue[16], menuOnlyValue[16], chatOnlyValue[16];
             GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
             GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
             GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
@@ -322,6 +362,11 @@ public int MenuHandler_Settings(Menu menu, MenuAction action, int client, int pa
                 }
             }
         }
+        else if(StrEqual(info, "types"))
+        {
+            ShowQuestionTypesMenu(client);
+            return 0;
+        }
         else if(StrEqual(info, "info"))
         {
             ShowInfoMenu(client);
@@ -333,6 +378,104 @@ public int MenuHandler_Settings(Menu menu, MenuAction action, int client, int pa
     else if(action == MenuAction_End)
     {
         delete menu;
+    }
+    
+    return 0;
+}
+
+void ShowQuestionTypesMenu(int client)
+{
+    Menu menu = new Menu(MenuHandler_QuestionTypes);
+    menu.SetTitle("Question Types\n \nSelect which types of questions you want:");
+    
+    char typeValue[16];
+    GetClientCookie(client, g_hCookieQuestionTypes, typeValue, sizeof(typeValue));
+    int types = StringToInt(typeValue);
+    
+    char display[64];
+    bool mathEnabled = (types & (1 << view_as<int>(TYPE_MATH))) != 0;
+    bool scienceEnabled = (types & (1 << view_as<int>(TYPE_SCIENCE))) != 0;
+    bool programmingEnabled = (types & (1 << view_as<int>(TYPE_PROGRAMMING))) != 0;
+    bool generalEnabled = (types & (1 << view_as<int>(TYPE_GENERAL))) != 0;
+    
+    Format(display, sizeof(display), "Math Questions: %s", mathEnabled ? "{green}✓" : "{red}✗");
+    StripColors(display, display, sizeof(display));
+    menu.AddItem("math", display);
+    
+    Format(display, sizeof(display), "Science Questions: %s", scienceEnabled ? "{green}✓" : "{red}✗");
+    StripColors(display, display, sizeof(display));
+    menu.AddItem("science", display);
+    
+    Format(display, sizeof(display), "Programming Questions: %s", programmingEnabled ? "{green}✓" : "{red}✗");
+    StripColors(display, display, sizeof(display));
+    menu.AddItem("programming", display);
+    
+    Format(display, sizeof(display), "General Questions: %s", generalEnabled ? "{green}✓" : "{red}✗");
+    StripColors(display, display, sizeof(display));
+    menu.AddItem("general", display);
+    
+    menu.AddItem("all", "Select All Types");
+    menu.AddItem("none", "Deselect All Types");
+    menu.AddItem("back", "Back to Settings");
+    
+    menu.ExitButton = true;
+    menu.ExitBackButton = true;
+    menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_QuestionTypes(Menu menu, MenuAction action, int client, int param2)
+{
+    if(action == MenuAction_Select)
+    {
+        char info[32];
+        menu.GetItem(param2, info, sizeof(info));
+        
+        char typeValue[16];
+        GetClientCookie(client, g_hCookieQuestionTypes, typeValue, sizeof(typeValue));
+        int types = StringToInt(typeValue);
+        
+        if(StrEqual(info, "math"))
+        {
+            types ^= (1 << view_as<int>(TYPE_MATH));
+        }
+        else if(StrEqual(info, "science"))
+        {
+            types ^= (1 << view_as<int>(TYPE_SCIENCE));
+        }
+        else if(StrEqual(info, "programming"))
+        {
+            types ^= (1 << view_as<int>(TYPE_PROGRAMMING));
+        }
+        else if(StrEqual(info, "general"))
+        {
+            types ^= (1 << view_as<int>(TYPE_GENERAL));
+        }
+        else if(StrEqual(info, "all"))
+        {
+            types = 15; // 1+2+4+8 = 15 (all types)
+        }
+        else if(StrEqual(info, "none"))
+        {
+            types = 0;
+        }
+        else if(StrEqual(info, "back"))
+        {
+            ShowSettingsMenu(client);
+            return 0;
+        }
+        
+        IntToString(types, typeValue, sizeof(typeValue));
+        SetClientCookie(client, g_hCookieQuestionTypes, typeValue);
+        
+        ShowQuestionTypesMenu(client);
+    }
+    else if(action == MenuAction_End)
+    {
+        delete menu;
+    }
+    else if(action == MenuAction_Cancel && param2 == MenuCancel_ExitBack)
+    {
+        ShowSettingsMenu(client);
     }
     
     return 0;
@@ -350,6 +493,7 @@ void ShowInfoMenu(int client)
     menu.AddItem("line5", "• Difficulty affects reward amount", ITEMDRAW_DISABLED);
     menu.AddItem("line6", "• Math questions are auto-generated", ITEMDRAW_DISABLED);
     menu.AddItem("line7", "• Other questions from config file", ITEMDRAW_DISABLED);
+    menu.AddItem("line8", "• Filter question types in settings", ITEMDRAW_DISABLED);
     
     menu.AddItem("back", "Back to Settings");
     
@@ -382,32 +526,6 @@ public int MenuHandler_Info(Menu menu, MenuAction action, int client, int param2
     return 0;
 }
 
-/*
-bool IsQuizEnabledForClient(int client)
-{
-    if(!IsClientInGame(client) || IsFakeClient(client))
-        return false;
-    
-    char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
-    GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
-    GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
-    GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
-    if(StringToInt(enabledValue) == 0)
-        return false;
-    
-    return true;
-}
-*/
-
-/*
-bool IsMenuOnlyForClient(int client)
-{
-    char value[8];
-    GetClientCookie(client, g_hCookieMenuOnly, value, sizeof(value));
-    return StringToInt(value) != 0;
-}
-*/
-
 public void OnMapStart()
 {
     StopCurrentQuestion();
@@ -415,6 +533,7 @@ public void OnMapStart()
     g_arrScienceQuestions.Clear();
     g_arrProgrammingQuestions.Clear();
     g_arrGeneralQuestions.Clear();
+    g_arrMathQuestions.Clear();
     g_bConfigLoaded = false;
     
     char configPath[PLATFORM_MAX_PATH];
@@ -431,8 +550,11 @@ public void OnMapStart()
     
     for(int i = 1; i <= MaxClients; i++)
     {
-        g_iAttempts[i] = 0;
-        g_iMenuPlayersAnswered[i] = 0;
+        if(IsClientInGame(i) && IsClientConnected(i))
+        {
+            g_iAttempts[i] = 0;
+            g_iMenuPlayersAnswered[i] = 0;
+        }
     }
 }
 
@@ -529,12 +651,22 @@ public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 {
     StopCurrentQuestion();
     g_iQuestionCounter = 0;
-    CPrintToChatAll("{aqua}[Quiz]{default} You can disable quiz questions or change modes using {lightblue}/quizsettings{default} command.");
     
     for(int i = 1; i <= MaxClients; i++)
     {
-        g_iAttempts[i] = 0;
-        g_iMenuPlayersAnswered[i] = 0;
+        if(IsClientInGame(i) && IsClientConnected(i) && !IsFakeClient(i) && IsQuizEnabledForClient(i))
+        {
+            CPrintToChat(i, "{aqua}[Quiz]{default} You can customize quiz settings using {lightblue}/quizsettings{default} command.");
+        }
+    }
+    
+    for(int i = 1; i <= MaxClients; i++)
+    {
+        if(IsClientInGame(i) && IsClientConnected(i))
+        {
+            g_iAttempts[i] = 0;
+            g_iMenuPlayersAnswered[i] = 0;
+        }
     }
     
     if(g_cvEnabled.BoolValue)
@@ -560,6 +692,9 @@ public void Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
 
 public void OnClientPutInServer(int client)
 {
+    if(!IsClientConnected(client) || IsFakeClient(client))
+        return;
+    
     g_iAttempts[client] = 0;
     g_iMenuPlayersAnswered[client] = 0;
 }
@@ -573,32 +708,116 @@ public Action Timer_StartFirstQuestion(Handle timer)
     return Plugin_Stop;
 }
 
-bool ShouldSeeChatQuestions(int client)
+bool IsQuizEnabledForClient(int client)
 {
-    if(!IsClientInGame(client) || IsFakeClient(client))
+    if(!IsClientInGame(client) || !IsClientConnected(client) || IsFakeClient(client))
         return false;
     
-    char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
+    char enabledValue[16];
     GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+    return StringToInt(enabledValue) != 0;
+}
+
+bool ShouldSeeChatQuestions(int client)
+{
+    if(!IsQuizEnabledForClient(client))
+        return false;
+    
+    char chatOnlyValue[16], menuOnlyValue[16];
     GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
     GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
-    if(StringToInt(enabledValue) == 0 || StringToInt(menuOnlyValue) != 0)
+    
+    if(StringToInt(menuOnlyValue) != 0)
         return false;
+    
     return true;
 }
 
 bool ShouldSeeMenuQuestions(int client)
 {
-    if(!IsClientInGame(client) || IsFakeClient(client))
+    if(!IsQuizEnabledForClient(client))
         return false;
     
-    char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
-    GetClientCookie(client, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+    char chatOnlyValue[16], menuOnlyValue[16];
     GetClientCookie(client, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
     GetClientCookie(client, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
-    if(StringToInt(enabledValue) == 0 || StringToInt(chatOnlyValue) != 0)
+    
+    if(StringToInt(chatOnlyValue) != 0)
         return false;
+    
     return true;
+}
+
+bool IsQuestionTypeEnabledForClient(int client, QuestionType qType)
+{
+    if(!IsQuizEnabledForClient(client))
+        return false;
+    
+    char typeValue[16];
+    GetClientCookie(client, g_hCookieQuestionTypes, typeValue, sizeof(typeValue));
+    int types = StringToInt(typeValue);
+    
+    return (types & (1 << view_as<int>(qType))) != 0;
+}
+
+QuestionType GetRandomQuestionTypeForClient(int client, bool forMenu = false)
+{
+    int availableTypes = 0;
+    QuestionType typeList[TYPE_COUNT];
+    
+    for(QuestionType qType = TYPE_MATH; qType < TYPE_COUNT; qType++)
+    {
+        if(IsQuestionTypeEnabledForClient(client, qType))
+        {
+            bool hasQuestions = false;
+            switch(qType)
+            {
+                case TYPE_MATH:
+                    hasQuestions = true;
+                case TYPE_SCIENCE:
+                    hasQuestions = g_arrScienceQuestions.Length > 0;
+                case TYPE_PROGRAMMING:
+                    hasQuestions = g_arrProgrammingQuestions.Length > 0;
+                case TYPE_GENERAL:
+                    hasQuestions = g_arrGeneralQuestions.Length > 0;
+            }
+            
+            if(hasQuestions)
+            {
+                typeList[availableTypes] = qType;
+                availableTypes++;
+            }
+        }
+    }
+    
+    if(availableTypes == 0)
+        return TYPE_MATH;
+    
+    if(forMenu && availableTypes > 1)
+    {
+        ArrayList weightedList = new ArrayList();
+        
+        for(int i = 0; i < availableTypes; i++)
+        {
+            if(typeList[i] != TYPE_MATH)
+            {
+                weightedList.Push(typeList[i]);
+                weightedList.Push(typeList[i]);
+            }
+            else
+            {
+                weightedList.Push(typeList[i]);
+            }
+        }
+        
+        int randomIndex = GetRandomInt(0, weightedList.Length - 1);
+        QuestionType selectedType = weightedList.Get(randomIndex);
+        delete weightedList;
+        
+        return selectedType;
+    }
+    
+    return typeList[GetRandomInt(0, availableTypes - 1)];
 }
 
 void StartNewQuestion()
@@ -616,64 +835,125 @@ void StartNewQuestion()
     g_iCurrentDifficulty = DIFFICULTY_MEDIUM;
     g_bMenuQuestion = false;
     g_iMenuCorrectIndex = -1;
+    g_iCurrentQuestionType = TYPE_MATH;
     
-    for(int i = 0; i < 4; i++)
+    for(int i = 0; i < 6; i++)
     {
         g_sMenuAnswers[i][0] = '\0';
     }
     
     for(int i = 1; i <= MaxClients; i++)
     {
-        g_iAttempts[i] = 0;
-        g_iMenuPlayersAnswered[i] = 0;
+        if(IsClientInGame(i) && IsClientConnected(i))
+        {
+            g_iAttempts[i] = 0;
+            g_iMenuPlayersAnswered[i] = 0;
+        }
     }
     
-    QuestionMode qMode = GetRandomQuestionMode();
+    int[] clients = new int[MaxClients];
+    int clientCount = 0;
     
-    bool questionGenerated = false;
-    
-    if(qMode == MODE_MENU)
+    for(int i = 1; i <= MaxClients; i++)
     {
-        QuestionType qType = GetRandomQuestionType(true);
-        
-        switch(qType)
+        if(IsClientInGame(i) && IsClientConnected(i) && !IsFakeClient(i) && IsQuizEnabledForClient(i))
         {
-            case TYPE_SCIENCE:
-                questionGenerated = GenerateScienceQuestion();
-            case TYPE_PROGRAMMING:
-                questionGenerated = GenerateProgrammingQuestion();
-            case TYPE_GENERAL:
-                questionGenerated = GenerateGeneralQuestion();
-            default:
-                questionGenerated = GenerateMathQuestion();
+            clients[clientCount++] = i;
+        }
+    }
+    
+    if(clientCount == 0)
+    {
+        QuestionMode qMode = GetRandomQuestionMode();
+        
+        if(qMode == MODE_MENU)
+        {
+            if(!GenerateConfigQuestion())
+                GenerateMathQuestion();
+        }
+        else
+        {
+            QuestionType qType;
+            int random = GetRandomInt(1, 100);
+            
+            if(random <= 70)
+            {
+                qType = TYPE_MATH;
+            }
+            else
+            {
+                ArrayList availableTypes = new ArrayList();
+                if(g_arrScienceQuestions.Length > 0) availableTypes.Push(TYPE_SCIENCE);
+                if(g_arrProgrammingQuestions.Length > 0) availableTypes.Push(TYPE_PROGRAMMING);
+                if(g_arrGeneralQuestions.Length > 0) availableTypes.Push(TYPE_GENERAL);
+                
+                if(availableTypes.Length == 0)
+                {
+                    qType = TYPE_MATH;
+                }
+                else
+                {
+                    int typeIndex = GetRandomInt(0, availableTypes.Length - 1);
+                    qType = availableTypes.Get(typeIndex);
+                }
+                delete availableTypes;
+            }
+            
+            switch(qType)
+            {
+                case TYPE_MATH: GenerateMathQuestion();
+                case TYPE_SCIENCE: if(!GenerateScienceQuestion()) GenerateMathQuestion();
+                case TYPE_PROGRAMMING: if(!GenerateProgrammingQuestion()) GenerateMathQuestion();
+                case TYPE_GENERAL: if(!GenerateGeneralQuestion()) GenerateMathQuestion();
+            }
         }
     }
     else
     {
-        QuestionType qType = GetRandomQuestionType(false);
+        int randomClient = clients[GetRandomInt(0, clientCount - 1)];
         
-        switch(qType)
+        QuestionMode qMode = GetRandomQuestionMode();
+        g_iCurrentQuestionType = GetRandomQuestionTypeForClient(randomClient, qMode == MODE_MENU);
+        
+        if(qMode == MODE_MENU)
         {
-            case TYPE_MATH:
-                questionGenerated = GenerateMathQuestion();
-            case TYPE_SCIENCE:
-                questionGenerated = GenerateScienceQuestion();
-            case TYPE_PROGRAMMING:
-                questionGenerated = GenerateProgrammingQuestion();
-            case TYPE_GENERAL:
-                questionGenerated = GenerateGeneralQuestion();
+            bool questionGenerated = false;
+            switch(g_iCurrentQuestionType)
+            {
+                case TYPE_SCIENCE:
+                    questionGenerated = GenerateScienceQuestion();
+                case TYPE_PROGRAMMING:
+                    questionGenerated = GenerateProgrammingQuestion();
+                case TYPE_GENERAL:
+                    questionGenerated = GenerateGeneralQuestion();
+                default:
+                    questionGenerated = GenerateMathQuestion();
+            }
+            
+            if(!questionGenerated)
+                GenerateMathQuestion();
         }
-    }
-    
-    if(!questionGenerated || g_sCurrentAnswer[0] == '\0')
-    {
-        GenerateMathQuestion();
+        else
+        {
+            switch(g_iCurrentQuestionType)
+            {
+                case TYPE_MATH:
+                    GenerateMathQuestion();
+                case TYPE_SCIENCE:
+                    if(!GenerateScienceQuestion()) GenerateMathQuestion();
+                case TYPE_PROGRAMMING:
+                    if(!GenerateProgrammingQuestion()) GenerateMathQuestion();
+                case TYPE_GENERAL:
+                    if(!GenerateGeneralQuestion()) GenerateMathQuestion();
+            }
+        }
     }
     
     g_iCurrentReward = CalculateReward(g_iCurrentDifficulty);
     g_iQuestionCounter++;
     
-    if(qMode == MODE_MENU && PrepareMenuQuestion())
+    QuestionMode finalMode = GetRandomQuestionMode();
+    if(finalMode == MODE_MENU && PrepareMenuQuestion())
     {
         g_bMenuQuestion = true;
         g_fTimeout = GetGameTime() + g_cvMaxMenuTime.FloatValue;
@@ -685,9 +965,11 @@ void StartNewQuestion()
     
     if(g_cvDebugMode.BoolValue)
     {
-        PrintToServer("[RandomQuiz] Question #%d: %s | Answer: %s | Difficulty: %d | Reward: %d | Mode: %s", 
-                     g_iQuestionCounter, g_sCurrentQuestion, g_sCurrentAnswer, 
-                     g_iCurrentDifficulty, g_iCurrentReward, g_bMenuQuestion ? "Menu" : "Chat");
+        char typeNames[TYPE_COUNT][16] = {"Math", "Science", "Programming", "General"};
+        PrintToServer("[RandomQuiz] Question #%d: Type: %s | Mode: %s | Answer: %s | Difficulty: %d | Reward: %d", 
+                     g_iQuestionCounter, typeNames[g_iCurrentQuestionType], 
+                     g_bMenuQuestion ? "Menu" : "Chat", g_sCurrentAnswer, 
+                     g_iCurrentDifficulty, g_iCurrentReward);
     }
     
     DisplayQuestionToPlayers();
@@ -696,6 +978,7 @@ void StartNewQuestion()
     g_hTimeoutTimer = CreateTimer(timeout, Timer_QuestionTimeout, _, TIMER_FLAG_NO_MAPCHANGE);
 }
 
+/*
 QuestionType GetRandomQuestionType(bool forMenu = false)
 {
     if(forMenu)
@@ -731,6 +1014,7 @@ QuestionType GetRandomQuestionType(bool forMenu = false)
         
         return TYPE_MATH;
     }
+    
     int random = GetRandomInt(1, 100);
     
     if(random <= 70) 
@@ -770,6 +1054,82 @@ QuestionType GetRandomQuestionType(bool forMenu = false)
     
     return TYPE_MATH;
 }
+*/
+
+bool GenerateConfigQuestion()
+{
+    ArrayList availableTypes = new ArrayList();
+    
+    if(g_arrScienceQuestions.Length > 0) availableTypes.Push(TYPE_SCIENCE);
+    if(g_arrProgrammingQuestions.Length > 0) availableTypes.Push(TYPE_PROGRAMMING);
+    if(g_arrGeneralQuestions.Length > 0) availableTypes.Push(TYPE_GENERAL);
+    
+    if(availableTypes.Length == 0)
+        return false;
+    
+    int randomIndex = GetRandomInt(0, availableTypes.Length - 1);
+    QuestionType selectedType = availableTypes.Get(randomIndex);
+    delete availableTypes;
+    
+    switch(selectedType)
+    {
+        case TYPE_SCIENCE: return GenerateScienceQuestion();
+        case TYPE_PROGRAMMING: return GenerateProgrammingQuestion();
+        case TYPE_GENERAL: return GenerateGeneralQuestion();
+    }
+    
+    return false;
+}
+
+QuestionMode GetRandomQuestionMode()
+{
+    int chatPlayers = 0;
+    int menuPlayers = 0;
+    int allPlayers = 0;
+    
+    for(int i = 1; i <= MaxClients; i++)
+    {
+        if(IsClientInGame(i) && IsClientConnected(i) && !IsFakeClient(i))
+        {
+            char enabledValue[16], chatOnlyValue[16], menuOnlyValue[16];
+            GetClientCookie(i, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
+            GetClientCookie(i, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
+            GetClientCookie(i, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
+            
+            if(StringToInt(enabledValue) != 0)
+            {
+                allPlayers++;
+                
+                if(StringToInt(chatOnlyValue) != 0)
+                    chatPlayers++;
+                else if(StringToInt(menuOnlyValue) != 0)
+                    menuPlayers++;
+                else
+                {
+                    chatPlayers++;
+                    menuPlayers++;
+                }
+            }
+        }
+    }
+    
+    if(allPlayers == 0)
+        return MODE_CHAT;
+    
+    if(chatPlayers > 0 && menuPlayers == 0)
+        return MODE_CHAT;
+    
+    if(menuPlayers > 0 && chatPlayers == 0)
+        return MODE_MENU;
+    
+    int random = GetRandomInt(1, 100);
+    if(random <= g_cvMenuPercentage.IntValue)
+    {
+        return MODE_MENU;
+    }
+    
+    return MODE_CHAT;
+}
 
 int CalculateReward(int difficulty)
 {
@@ -792,7 +1152,7 @@ int CalculateReward(int difficulty)
 
 char[] GetDifficultyName(int difficulty)
 {
-    char name[16];
+    static char name[16];
     switch(difficulty)
     {
         case DIFFICULTY_EASY: name = "Easy";
@@ -803,13 +1163,34 @@ char[] GetDifficultyName(int difficulty)
     return name;
 }
 
+char[] GetQuestionTypeName(QuestionType qType)
+{
+    static char name[16];
+    switch(qType)
+    {
+        case TYPE_MATH: name = "Math";
+        case TYPE_SCIENCE: name = "Science";
+        case TYPE_PROGRAMMING: name = "Programming";
+        case TYPE_GENERAL: name = "General";
+        default: name = "Unknown";
+    }
+    return name;
+}
+
 void ProcessCorrectAnswer(int client)
 {
     if(g_bQuestionAnswered)
     {
-        CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
+        if(IsQuizEnabledForClient(client))
+        {
+            CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
+        }
         return;
     }
+    
+    if(!IsQuizEnabledForClient(client))
+        return;
+    
     g_iCorrectClient = client;
     g_bQuestionAnswered = true;
     
@@ -819,83 +1200,47 @@ void ProcessCorrectAnswer(int client)
         g_hTimeoutTimer = null;
     }
 
-    if(g_iMenuPlayersAnswered[client] == 2)
+    if(g_bMenuQuestion && g_iMenuPlayersAnswered[client] == 2)
     {
         CPrintToChat(client, "{aqua}[Quiz]{default} You cannot answer - you already answered wrong!");
         return;
     }
     
-    // Calculate reward with penalty for attempts
     float penalty = 0.2 * (g_iAttempts[client] - 1);
     if(penalty > 0.5) penalty = 0.5;
     
     int finalReward = RoundToCeil(float(g_iCurrentReward) * (1.0 - penalty));
     
-    if(Shop_IsAuthorized(client))
-    {
-        Shop_GiveClientCredits(client, finalReward);
-        CPrintToChatAll("{lightblue}[Quiz]{default} {green}%N{default} answered correctly! {orange}+%d credits{default} | Answer: {orange}%s", 
-                      client, finalReward, g_sCurrentAnswer);
-    }
-    else
-    {
-        CPrintToChatAll("{lightblue}[Quiz]{default} {green}%N{default} answered correctly! (No Shop) | Answer: {orange}%s", 
-                      client, g_sCurrentAnswer);
-    }
-    
-    g_hQuestionTimer = CreateTimer(g_cvQuestionInterval.FloatValue, Timer_NextQuestion, _, TIMER_FLAG_NO_MAPCHANGE);
-}
-
-QuestionMode GetRandomQuestionMode()
-{
-    int chatPlayers = 0;
-    int menuPlayers = 0;
-    int allPlayers = 0;
-    
     for(int i = 1; i <= MaxClients; i++)
     {
-        if(IsClientInGame(i) && !IsFakeClient(i))
+        if(IsClientInGame(i) && IsClientConnected(i) && !IsFakeClient(i) && IsQuizEnabledForClient(i))
         {
-            char enabledValue[8], chatOnlyValue[8], menuOnlyValue[8];
-            GetClientCookie(i, g_hCookieEnabled, enabledValue, sizeof(enabledValue));
-            GetClientCookie(i, g_hCookieChatOnly, chatOnlyValue, sizeof(chatOnlyValue));
-            GetClientCookie(i, g_hCookieMenuOnly, menuOnlyValue, sizeof(menuOnlyValue));
-            
-            if(StringToInt(enabledValue) != 0)
+            if(Shop_IsAuthorized(client))
             {
-                allPlayers++;
-                
-                if(StringToInt(chatOnlyValue) != 0)
-                    chatPlayers++;
-                else if(StringToInt(menuOnlyValue) != 0)
-                    menuPlayers++;
-                else
-                {
-                    chatPlayers++;
-                    menuPlayers++;
-                }
+                CPrintToChat(i, "{lightblue}[Quiz]{default} {green}%N{default} answered correctly! {orange}+%d credits{default} | Type: {olive}%s", 
+                          client, finalReward, GetQuestionTypeName(g_iCurrentQuestionType));
+            }
+            else
+            {
+                CPrintToChat(i, "{lightblue}[Quiz]{default} {green}%N{default} answered correctly! (No Shop) | Type: {olive}%s", 
+                          client, GetQuestionTypeName(g_iCurrentQuestionType));
             }
         }
     }
-    if(allPlayers == 0)
-        return MODE_CHAT;
-    if(chatPlayers > 0 && menuPlayers == 0)
-        return MODE_CHAT;
-    if(menuPlayers > 0 && chatPlayers == 0)
-        return MODE_MENU;
-    int random = GetRandomInt(1, 100);
-    if(random <= g_cvMenuPercentage.IntValue)
+    
+    if(Shop_IsAuthorized(client))
     {
-        return MODE_MENU;
+        Shop_GiveClientCredits(client, finalReward);
     }
     
-    return MODE_CHAT;
+    g_hQuestionTimer = CreateTimer(g_cvQuestionInterval.FloatValue, Timer_NextQuestion, _, TIMER_FLAG_NO_MAPCHANGE);
 }
 
 void DisplayQuestionToPlayers()
 {
     char difficultyColor[32];
     char rewardColor[32];
+    char typeColor[32];
     
     switch(g_iCurrentDifficulty)
     {
@@ -921,27 +1266,47 @@ void DisplayQuestionToPlayers()
         }
     }
     
+    switch(g_iCurrentQuestionType)
+    {
+        case TYPE_MATH: Format(typeColor, sizeof(typeColor), "{lightblue}");
+        case TYPE_SCIENCE: Format(typeColor, sizeof(typeColor), "{lime}");
+        case TYPE_PROGRAMMING: Format(typeColor, sizeof(typeColor), "{magenta}");
+        case TYPE_GENERAL: Format(typeColor, sizeof(typeColor), "{yellow}");
+        default: Format(typeColor, sizeof(typeColor), "{white}");
+    }
+    
     for(int i = 1; i <= MaxClients; i++)
     {
-        if(IsClientInGame(i) && !IsFakeClient(i))
+        if(!IsClientInGame(i) || !IsClientConnected(i) || IsFakeClient(i))
+            continue;
+            
+        if(!IsQuizEnabledForClient(i))
+            continue;
+            
+        if(!IsQuestionTypeEnabledForClient(i, g_iCurrentQuestionType))
         {
-            if(g_bMenuQuestion)
+            continue;
+        }
+        
+        if(g_bMenuQuestion)
+        {
+            if(ShouldSeeMenuQuestions(i))
             {
-                if(ShouldSeeMenuQuestions(i))
-                {
-                    ShowQuestionMenu(i);
-                }
+                ShowQuestionMenu(i);
             }
-            else
+        }
+        else
+        {
+            if(ShouldSeeChatQuestions(i))
             {
-                if(ShouldSeeChatQuestions(i))
-                {
-                    CPrintToChat(i, "{aqua}[Quiz]{default} Question {lightblue}#%d{default}: {magenta}%s", 
-                               g_iQuestionCounter, g_sCurrentQuestion);
-                    CPrintToChat(i, "{aqua}[Quiz]{default} Time: {fullred}%.0f{default}s | Difficulty: %s%s{default} | Reward: %s%d credits", 
-                               g_cvTimeout.FloatValue, difficultyColor, GetDifficultyName(g_iCurrentDifficulty), rewardColor, g_iCurrentReward);
-                    CPrintToChat(i, "{aqua}[Quiz]{default} Type your answer in chat! {olive}(/quizmenu to change settings)");
-                }
+                CPrintToChat(i, "{aqua}[Quiz]{default} Question {lightblue}#%d{default}: {magenta}%s", 
+                           g_iQuestionCounter, g_sCurrentQuestion);
+                CPrintToChat(i, "{aqua}[Quiz]{default} Type: %s%s{default} | Difficulty: %s%s{default} | Reward: %s%d credits", 
+                           typeColor, GetQuestionTypeName(g_iCurrentQuestionType),
+                           difficultyColor, GetDifficultyName(g_iCurrentDifficulty), 
+                           rewardColor, g_iCurrentReward);
+                CPrintToChat(i, "{aqua}[Quiz]{default} Time: {fullred}%.0f{default}s | Type your answer in chat!", 
+                           g_cvTimeout.FloatValue);
             }
         }
     }
@@ -959,13 +1324,28 @@ void ShowQuestionMenu(int client)
     char cleanQuestion[256];
     Menu menu = new Menu(MenuHandler_Question);
     StripColors(g_sCurrentQuestion, cleanQuestion, sizeof(cleanQuestion));
-    menu.SetTitle("Quiz Question #%d\n \n%s\n \nDifficulty: %s\nReward: %d credits\nTime: %.0fs\n \n", 
-             g_iQuestionCounter, cleanQuestion, 
+    
+    char typeColor[32];
+    switch(g_iCurrentQuestionType)
+    {
+        case TYPE_MATH: Format(typeColor, sizeof(typeColor), "{lightblue}");
+        case TYPE_SCIENCE: Format(typeColor, sizeof(typeColor), "{lime}");
+        case TYPE_PROGRAMMING: Format(typeColor, sizeof(typeColor), "{magenta}");
+        case TYPE_GENERAL: Format(typeColor, sizeof(typeColor), "{yellow}");
+        default: Format(typeColor, sizeof(typeColor), "{white}");
+    }
+    
+    char coloredType[64];
+    Format(coloredType, sizeof(coloredType), "%s%s", typeColor, GetQuestionTypeName(g_iCurrentQuestionType));
+    StripColors(coloredType, coloredType, sizeof(coloredType));
+    
+    menu.SetTitle("Quiz Question #%d\n \n%s\n \nType: %s | Difficulty: %s\nReward: %d credits\nTime: %.0fs\n \n", 
+             g_iQuestionCounter, cleanQuestion, coloredType,
              GetDifficultyName(g_iCurrentDifficulty), g_iCurrentReward,
              g_fTimeout - GetGameTime());
     
     int options = g_cvMenuOptions.IntValue;
-    if(options > 4) options = 4;
+    if(options > 6) options = 6;
     
     for(int i = 0; i < options; i++)
     {
@@ -999,7 +1379,10 @@ public int MenuHandler_Question(Menu menu, MenuAction action, int client, int pa
     {
         if(GetGameTime() > g_fTimeout)
         {
-            CPrintToChat(client, "{aqua}[Quiz]{default} Time's up! Question has expired.");
+            if(IsQuizEnabledForClient(client))
+            {
+                CPrintToChat(client, "{aqua}[Quiz]{default} Time's up! Question has expired.");
+            }
             return 0;
         }
         
@@ -1008,17 +1391,26 @@ public int MenuHandler_Question(Menu menu, MenuAction action, int client, int pa
         
         if(StrEqual(info, "exit"))
         {
-            CPrintToChat(client, "{aqua}[Quiz]{default} Menu closed. Question is still active!");
+            if(IsQuizEnabledForClient(client))
+            {
+                CPrintToChat(client, "{aqua}[Quiz]{default} Menu closed. Question is still active!");
+            }
             return 0;
         }
         
         int selectedIndex = StringToInt(info);
         if(g_bQuestionAnswered || g_iCorrectClient != -1)
         {
-            CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
+            if(IsQuizEnabledForClient(client))
+            {
+                CPrintToChat(client, "{aqua}[Quiz]{default} Someone already answered this question!");
+            }
             return 0;
         }
         
+        if(!IsQuizEnabledForClient(client))
+            return 0;
+            
         if(g_iMenuPlayersAnswered[client] > 0)
         {
             CPrintToChat(client, "{aqua}[Quiz]{default} You already answered this question!");
@@ -1040,7 +1432,7 @@ public int MenuHandler_Question(Menu menu, MenuAction action, int client, int pa
     {
         if(param2 == MenuCancel_Exit || param2 == MenuCancel_Timeout)
         {
-            if(param2 == MenuCancel_Exit)
+            if(param2 == MenuCancel_Exit && IsQuizEnabledForClient(client))
             {
                 CPrintToChat(client, "{aqua}[Quiz]{default} Menu closed. Question is still active!");
             }
@@ -1083,8 +1475,13 @@ void StripColors(const char[] input, char[] output, int maxlen)
 bool PrepareMenuQuestion()
 {
     int options = g_cvMenuOptions.IntValue;
-    if(options > 4) options = 4;
+    if(options > 6) options = 6;
     if(options < 2) options = 2;
+    
+    for(int i = 0; i < 6; i++)
+    {
+        g_sMenuAnswers[i][0] = '\0';
+    }
     
     strcopy(g_sMenuAnswers[0], sizeof(g_sMenuAnswers[]), g_sCurrentAnswer);
     g_iMenuCorrectIndex = 0;
@@ -1122,54 +1519,73 @@ void GenerateWrongAnswer(int index)
     {
         int correctNum = StringToInt(g_sCurrentAnswer);
         int wrongNum;
+        int attempts = 0;
         
         do
         {
-            int offset = GetRandomInt(-10, 10);
-            if(offset == 0) offset = GetRandomInt(1, 5);
-            wrongNum = correctNum + offset;
+            int offset;
+            if(correctNum == 0)
+            {
+                offset = GetRandomInt(-10, 10);
+                if(offset == 0) offset = GetRandomInt(1, 5);
+            }
+            else
+            {
+                int percentage = GetRandomInt(10, 50);
+                if(GetRandomInt(0, 1) == 0)
+                    percentage = -percentage;
+                    
+                offset = RoundToCeil(float(correctNum) * (float(percentage) / 100.0));
+                if(offset == 0) offset = GetRandomInt(1, 5);
+            }
             
-        } while(wrongNum == correctNum || IsDuplicateAnswer(wrongNum, index));
+            wrongNum = correctNum + offset;
+            attempts++;
+            
+        } while((wrongNum == correctNum || IsDuplicateAnswer(wrongNum, index)) && attempts < 10);
         
         IntToString(wrongNum, g_sMenuAnswers[index], sizeof(g_sMenuAnswers[]));
     }
     else
     {
-    
         char wrong[128];
-        
-        int strategy = GetRandomInt(0, 2);
+        int strategy = GetRandomInt(0, 3);
         
         switch(strategy)
         {
-            case 0: 
+            case 0: // Random similar answer
             {
-                int len = strlen(g_sCurrentAnswer);
-                for(int i = 0; i < len; i++)
+                if(StrContains(g_sCurrentQuestion, "capital", false) != -1)
                 {
-                    wrong[i] = GetRandomInt('a', 'z');
-                    if(GetRandomInt(0, 3) == 0)
-                        wrong[i] = CharToUpper(wrong[i]);
+                    char capitals[][] = {"London", "Paris", "Berlin", "Madrid", "Rome", "Tokyo", "Washington", "Beijing", "Moscow", "Canberra"};
+                    do
+                    {
+                        Format(wrong, sizeof(wrong), "%s", capitals[GetRandomInt(0, sizeof(capitals) - 1)]);
+                    } while(StrEqual(wrong, g_sCurrentAnswer));
                 }
-                wrong[len] = '\0';
+                else if(StrContains(g_sCurrentQuestion, "chemical", false) != -1)
+                {
+                    char chemicals[][] = {"H2O", "CO2", "O2", "NaCl", "CH4", "NH3", "H2SO4", "C6H12O6", "HCl", "NaOH"};
+                    do
+                    {
+                        Format(wrong, sizeof(wrong), "%s", chemicals[GetRandomInt(0, sizeof(chemicals) - 1)]);
+                    } while(StrEqual(wrong, g_sCurrentAnswer));
+                }
+                else
+                {
+                    Format(wrong, sizeof(wrong), "Answer %c", GetRandomInt('A', 'Z'));
+                }
             }
-            case 1:
+            case 1: // Modify the correct answer
             {
                 strcopy(wrong, sizeof(wrong), g_sCurrentAnswer);
                 int len = strlen(wrong);
                 
-                if(len > 3 && GetRandomInt(0, 1) == 0)
+                if(len > 2)
                 {
-                    
-                    int pos = GetRandomInt(0, len - 1);
-                    for(int i = pos; i < len; i++)
-                        wrong[i] = wrong[i + 1];
-                }
-                else
-                {
-                    
-                    if(len < sizeof(wrong) - 1)
+                    if(GetRandomInt(0, 1) == 0 && len < sizeof(wrong) - 1)
                     {
+                        // Add a character
                         int pos = GetRandomInt(0, len);
                         for(int i = len; i > pos; i--)
                             wrong[i] = wrong[i - 1];
@@ -1178,31 +1594,47 @@ void GenerateWrongAnswer(int index)
                             wrong[pos] = CharToUpper(wrong[pos]);
                         wrong[len + 1] = '\0';
                     }
+                    else
+                    {
+                        // Remove a character
+                        int pos = GetRandomInt(0, len - 1);
+                        for(int i = pos; i < len; i++)
+                            wrong[i] = wrong[i + 1];
+                    }
                 }
             }
-            case 2:
+            case 2: // Random letters
             {
-                if(StrContains(g_sCurrentQuestion, "capital", false) != -1)
+                int len = strlen(g_sCurrentAnswer);
+                if(len > 10) len = 10;
+                
+                for(int i = 0; i < len; i++)
                 {
-                    char capitals[][] = {"London", "Paris", "Berlin", "Madrid", "Rome", "Tokyo"};
-                    Format(wrong, sizeof(wrong), "%s", capitals[GetRandomInt(0, sizeof(capitals) - 1)]);
+                    wrong[i] = GetRandomInt('a', 'z');
+                    if(GetRandomInt(0, 3) == 0)
+                        wrong[i] = CharToUpper(wrong[i]);
                 }
-                else if(StrContains(g_sCurrentQuestion, "chemical", false) != -1)
-                {
-                    char chemicals[][] = {"H2O", "CO2", "O2", "NaCl", "CH4", "NH3"};
-                    Format(wrong, sizeof(wrong), "%s", chemicals[GetRandomInt(0, sizeof(chemicals) - 1)]);
-                }
+                wrong[len] = '\0';
+            }
+            case 3: // Common wrong answers
+            {
+                if(StrContains(g_sCurrentAnswer, "Au", false) != -1)
+                    Format(wrong, sizeof(wrong), "Ag");
+                else if(StrContains(g_sCurrentAnswer, "Ag", false) != -1)
+                    Format(wrong, sizeof(wrong), "Au");
+                else if(StrContains(g_sCurrentAnswer, "Paris", false) != -1)
+                    Format(wrong, sizeof(wrong), "London");
+                else if(StrContains(g_sCurrentAnswer, "Tokyo", false) != -1)
+                    Format(wrong, sizeof(wrong), "Beijing");
                 else
-                {
-                    Format(wrong, sizeof(wrong), "Answer %d", index + 1);
-                }
+                    Format(wrong, sizeof(wrong), "Wrong %d", GetRandomInt(1, 999));
             }
         }
-    
+        
         int attempts = 0;
         while((StrEqual(wrong, g_sCurrentAnswer) || IsDuplicateAnswerString(wrong, index)) && attempts < 10)
         {
-            Format(wrong, sizeof(wrong), "Wrong %d", GetRandomInt(100, 999));
+            Format(wrong, sizeof(wrong), "Option %d", GetRandomInt(1, 999));
             attempts++;
         }
         
@@ -1213,12 +1645,17 @@ void GenerateWrongAnswer(int index)
 bool IsStringNumeric(const char[] str)
 {
     int len = strlen(str);
-    for(int i = 0; i < len; i++)
+    if(len == 0) return false;
+    
+    int start = 0;
+    if(str[0] == '-') start = 1;
+    
+    for(int i = start; i < len; i++)
     {
-        if(!IsCharNumeric(str[i]) && str[i] != '-')
+        if(!IsCharNumeric(str[i]))
             return false;
     }
-    return len > 0;
+    return true;
 }
 
 bool IsDuplicateAnswer(int number, int currentIndex)
@@ -1246,7 +1683,7 @@ bool IsDuplicateAnswerString(const char[] answer, int currentIndex)
 
 char[] GetNumberSuffix(int number)
 {
-    char suffix[4] = "";
+    static char suffix[4];
     
     if(number % 10 == 1 && number % 100 != 11)
         Format(suffix, sizeof(suffix), "st");
@@ -1262,10 +1699,11 @@ char[] GetNumberSuffix(int number)
 
 bool GenerateMathQuestion()
 {
+    g_iCurrentQuestionType = TYPE_MATH;
     int minNum = g_cvMinNumber.IntValue;
     int maxNum = g_cvMaxNumber.IntValue;
     
-    int operation = GetRandomInt(0, 5);
+    int operation = GetRandomInt(0, 7);
     
     switch(operation)
     {
@@ -1276,6 +1714,7 @@ bool GenerateMathQuestion()
             int answer = num1 + num2;
             IntToString(answer, g_sCurrentAnswer, sizeof(g_sCurrentAnswer));
             Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), "What is {orange}%d + %d{default}?", num1, num2);
+            g_iCurrentDifficulty = DIFFICULTY_EASY;
             return true;
         }
         case 1: // Simple subtraction
@@ -1285,6 +1724,7 @@ bool GenerateMathQuestion()
             int answer = num1 - num2;
             IntToString(answer, g_sCurrentAnswer, sizeof(g_sCurrentAnswer));
             Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), "What is {orange}%d - %d{default}?", num1, num2);
+            g_iCurrentDifficulty = DIFFICULTY_EASY;
             return true;
         }
         case 2: // Simple multiplication
@@ -1294,6 +1734,7 @@ bool GenerateMathQuestion()
             int answer = num1 * num2;
             IntToString(answer, g_sCurrentAnswer, sizeof(g_sCurrentAnswer));
             Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), "What is {orange}%d × %d{default}?", num1, num2);
+            g_iCurrentDifficulty = DIFFICULTY_EASY;
             return true;
         }
         case 3: // Simple division
@@ -1303,6 +1744,7 @@ bool GenerateMathQuestion()
             int dividend = divisor * result;
             IntToString(result, g_sCurrentAnswer, sizeof(g_sCurrentAnswer));
             Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), "What is {orange}%d ÷ %d{default}?", dividend, divisor);
+            g_iCurrentDifficulty = DIFFICULTY_EASY;
             return true;
         }
         case 4: // Find nth even/odd number
@@ -1319,6 +1761,7 @@ bool GenerateMathQuestion()
             Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), 
                    "What is the {orange}%d%s %s number{default} starting from {orange}%d{default}?", 
                    nth, GetNumberSuffix(nth), even ? "even" : "odd", start);
+            g_iCurrentDifficulty = DIFFICULTY_MEDIUM;
             return true;
         }
         case 5: // Multiple operations
@@ -1343,11 +1786,39 @@ bool GenerateMathQuestion()
                 Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), 
                        "What is {orange}%d × %d + %d{default}?", num1, num2, num3);
             }
+            g_iCurrentDifficulty = DIFFICULTY_MEDIUM;
+            return true;
+        }
+        case 6: // Square root
+        {
+            int num = GetRandomInt(2, 15);
+            int answer = num * num;
+            IntToString(num, g_sCurrentAnswer, sizeof(g_sCurrentAnswer));
+            Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), 
+                   "What is the square root of {orange}%d{default}?", answer);
+            g_iCurrentDifficulty = DIFFICULTY_MEDIUM;
+            return true;
+        }
+        case 7: // Percentage
+        {
+            int num = GetRandomInt(10, 200);
+            int percent = GetRandomInt(10, 90);
+            int answer = RoundToCeil(float(num) * (float(percent) / 100.0));
+            IntToString(answer, g_sCurrentAnswer, sizeof(g_sCurrentAnswer));
+            Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), 
+                   "What is {orange}%d%%{default} of {orange}%d{default}?", percent, num);
+            g_iCurrentDifficulty = DIFFICULTY_HARD;
             return true;
         }
     }
     
-    return false;
+    int num1 = GetRandomInt(minNum, maxNum/2);
+    int num2 = GetRandomInt(minNum, maxNum/2);
+    int answer = num1 + num2;
+    IntToString(answer, g_sCurrentAnswer, sizeof(g_sCurrentAnswer));
+    Format(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), "What is {orange}%d + %d{default}?", num1, num2);
+    g_iCurrentDifficulty = DIFFICULTY_EASY;
+    return true;
 }
 
 bool GenerateScienceQuestion()
@@ -1355,12 +1826,14 @@ bool GenerateScienceQuestion()
     if(g_arrScienceQuestions.Length == 0)
         return false;
     
+    g_iCurrentQuestionType = TYPE_SCIENCE;
     int index = GetRandomInt(0, g_arrScienceQuestions.Length - 1);
     ConfigQuestion qData;
     g_arrScienceQuestions.GetArray(index, qData);
     
     strcopy(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), qData.question);
     strcopy(g_sCurrentAnswer, sizeof(g_sCurrentAnswer), qData.answer);
+    g_iCurrentDifficulty = qData.difficulty;
     
     return true;
 }
@@ -1370,12 +1843,14 @@ bool GenerateProgrammingQuestion()
     if(g_arrProgrammingQuestions.Length == 0)
         return false;
     
+    g_iCurrentQuestionType = TYPE_PROGRAMMING;
     int index = GetRandomInt(0, g_arrProgrammingQuestions.Length - 1);
     ConfigQuestion qData;
     g_arrProgrammingQuestions.GetArray(index, qData);
     
     strcopy(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), qData.question);
     strcopy(g_sCurrentAnswer, sizeof(g_sCurrentAnswer), qData.answer);
+    g_iCurrentDifficulty = qData.difficulty;
     
     return true;
 }
@@ -1385,12 +1860,14 @@ bool GenerateGeneralQuestion()
     if(g_arrGeneralQuestions.Length == 0)
         return false;
     
+    g_iCurrentQuestionType = TYPE_GENERAL;
     int index = GetRandomInt(0, g_arrGeneralQuestions.Length - 1);
     ConfigQuestion qData;
     g_arrGeneralQuestions.GetArray(index, qData);
     
     strcopy(g_sCurrentQuestion, sizeof(g_sCurrentQuestion), qData.question);
     strcopy(g_sCurrentAnswer, sizeof(g_sCurrentAnswer), qData.answer);
+    g_iCurrentDifficulty = qData.difficulty;
     
     return true;
 }
@@ -1416,12 +1893,20 @@ public Action Timer_QuestionTimeout(Handle timer)
     
     if(!g_bQuestionAnswered && g_iCorrectClient == -1)
     {
-        CPrintToChatAll("{lightblue}[Quiz]{default} Time's up! No one answered. Answer was: {orange}%s", g_sCurrentAnswer);
+        for(int i = 1; i <= MaxClients; i++)
+        {
+            if(IsClientInGame(i) && IsClientConnected(i) && !IsFakeClient(i) && IsQuizEnabledForClient(i))
+            {
+                CPrintToChat(i, "{lightblue}[Quiz]{default} Time's up! No one answered. Type: {olive}%s", 
+                          GetQuestionTypeName(g_iCurrentQuestionType));
+            }
+        }
     }
     
+    // Close all open menus
     for(int i = 1; i <= MaxClients; i++)
     {
-        if(IsClientInGame(i) && !IsFakeClient(i))
+        if(IsClientInGame(i) && IsClientConnected(i))
         {
             Menu dummy = new Menu(MenuHandler_Dummy);
             dummy.Display(i, 0);
@@ -1443,42 +1928,9 @@ public Action Timer_NextQuestion(Handle timer)
 
 public Action Command_Say(int client, const char[] command, int argc)
 {
-    if(!g_cvEnabled.BoolValue || !IsClientInGame(client) || IsChatTrigger() || 
-       g_iCorrectClient != -1 || GetGameTime() > g_fTimeout)
+    if(!g_cvEnabled.BoolValue || !IsClientInGame(client) || !IsClientConnected(client) || IsFakeClient(client) || IsChatTrigger())
         return Plugin_Continue;
 
-    if(GetGameTime() > g_fTimeout)
-    {
-        char text[256];
-        GetCmdArgString(text, sizeof(text));
-        StripQuotes(text);
-        TrimString(text);
-        
-        if(StrContains(text, "!") != 0 && StrContains(text, "/") != 0)
-        {
-            CPrintToChat(client, "{aqua}[Quiz]{default} Time's up! Question has expired.");
-        }
-        return Plugin_Continue;
-    }
-
-    if(g_bQuestionAnswered || g_iCorrectClient != -1)
-    {
-        CPrintToChat(client, "{lightblue}[Quiz]{default} Someone already answered this question!");
-        return Plugin_Continue;
-    }
-    
-    if(g_iAttempts[client] >= g_cvMaxAttempts.IntValue)
-    {
-        CPrintToChat(client, "{lightblue}[Quiz]{default} You've used all {red}%d{default} attempts!", g_cvMaxAttempts.IntValue);
-        return Plugin_Continue;
-    }
-
-    if(g_iMenuPlayersAnswered[client] == 2)
-    {
-        CPrintToChat(client, "{aqua}[Quiz]{default} You already answered wrong in menu!");
-        return Plugin_Continue;
-    }
-    
     char text[256];
     GetCmdArgString(text, sizeof(text));
     StripQuotes(text);
@@ -1486,6 +1938,56 @@ public Action Command_Say(int client, const char[] command, int argc)
     
     if(StrEqual(text, ""))
         return Plugin_Continue;
+    
+    if(StrContains(text, "!") == 0 || StrContains(text, "/") == 0)
+        return Plugin_Continue;
+    
+    if(!IsQuizEnabledForClient(client))
+        return Plugin_Continue;
+    
+    if(g_iCorrectClient != -1 || GetGameTime() > g_fTimeout)
+    {
+        return Plugin_Continue;
+    }
+    
+    if(g_bQuestionAnswered || g_iCorrectClient != -1)
+    {
+        if(IsQuizEnabledForClient(client))
+        {
+            CPrintToChat(client, "{lightblue}[Quiz]{default} Someone already answered this question!");
+        }
+        return Plugin_Continue;
+    }
+    
+    if(!ShouldSeeChatQuestions(client))
+    {
+        CPrintToChat(client, "{aqua}[Quiz]{default} You're in {orange}Menu Only{default} mode! Change to {aqua}Chat & Menu{default} or {lime}Chat Only{default} in {orange}/quizmenu{default} to answer in chat.");
+        return Plugin_Continue;
+    }
+    
+    if(!IsQuestionTypeEnabledForClient(client, g_iCurrentQuestionType))
+    {
+        // Don't show any message for disabled question types
+        return Plugin_Continue;
+    }
+    
+    if(g_iAttempts[client] >= g_cvMaxAttempts.IntValue)
+    {
+        if(IsQuizEnabledForClient(client))
+        {
+            CPrintToChat(client, "{lightblue}[Quiz]{default} You've used all {red}%d{default} attempts!", g_cvMaxAttempts.IntValue);
+        }
+        return Plugin_Continue;
+    }
+    
+    if(g_bMenuQuestion && g_iMenuPlayersAnswered[client] == 2)
+    {
+        if(IsQuizEnabledForClient(client))
+        {
+            CPrintToChat(client, "{aqua}[Quiz]{default} You already answered wrong in menu!");
+        }
+        return Plugin_Continue;
+    }
     
     char lowerAnswer[128];
     char lowerText[256];
@@ -1501,6 +2003,7 @@ public Action Command_Say(int client, const char[] command, int argc)
     
     g_iAttempts[client]++;
     bool correct = false;
+    
     if(StrEqual(lowerText, lowerAnswer, false))
     {
         correct = true;
@@ -1521,8 +2024,11 @@ public Action Command_Say(int client, const char[] command, int argc)
     }
     else
     {
-        int attemptsLeft = g_cvMaxAttempts.IntValue - g_iAttempts[client];
-        CPrintToChat(client, "{lightblue}[Quiz]{default} Wrong answer! Attempts left: {red}%d", attemptsLeft);
+        if(IsQuizEnabledForClient(client))
+        {
+            int attemptsLeft = g_cvMaxAttempts.IntValue - g_iAttempts[client];
+            CPrintToChat(client, "{lightblue}[Quiz]{default} Wrong answer! Attempts left: {red}%d", attemptsLeft);
+        }
     }
     
     return Plugin_Continue;
