@@ -1135,16 +1135,17 @@ int CalculateReward(int difficulty)
 {
     int minCredits = g_cvMinCredits.IntValue;
     int maxCredits = g_cvMaxCredits.IntValue;
+    int range = maxCredits - minCredits;
     
     switch(difficulty)
     {
         case DIFFICULTY_EASY:
-            return GetRandomInt(minCredits, minCredits + ((maxCredits - minCredits) / 3));
+            return GetRandomInt(minCredits, minCredits + (range / 3));
         case DIFFICULTY_MEDIUM:
-            return GetRandomInt(minCredits + ((maxCredits - minCredits) / 3), 
-                              minCredits + ((maxCredits - minCredits) * 2 / 3));
+            return GetRandomInt(minCredits + (range / 3), 
+                              minCredits + ((range * 2) / 3));
         case DIFFICULTY_HARD:
-            return GetRandomInt(minCredits + ((maxCredits - minCredits) * 2 / 3), maxCredits);
+            return GetRandomInt(minCredits + ((range * 2) / 3), maxCredits);
         default:
             return GetRandomInt(minCredits, maxCredits);
     }
