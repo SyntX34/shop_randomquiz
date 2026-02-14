@@ -100,7 +100,7 @@ public void OnPluginStart()
     
     g_cvEnabled = CreateConVar("sm_randomquiz_enabled", "1", "Enable/disable Random Quiz plugin", _, true, 0.0, true, 1.0);
     g_cvMinCredits = CreateConVar("sm_randomquiz_mincredits", "50", "Minimum credits reward", _, true, 10.0);
-    g_cvMaxCredits = CreateConVar("sm_randomquiz_maxcredits", "500", "Maximum credits reward", _, true, 100.0);
+    g_cvMaxCredits = CreateConVar("sm_randomquiz_maxcredits", "500", "Maximum credits reward", _, true, 100.0, true, 1000.0);
     g_cvTimeout = CreateConVar("sm_randomquiz_timeout", "30.0", "Time in seconds to answer question", _, true, 5.0, true, 120.0);
     g_cvQuestionInterval = CreateConVar("sm_randomquiz_interval", "120.0", "Seconds between questions", _, true, 30.0, true, 600.0);
     g_cvMaxAttempts = CreateConVar("sm_randomquiz_maxattempts", "3", "Maximum attempts per question", _, true, 1.0, true, 5.0);
@@ -1135,20 +1135,43 @@ int CalculateReward(int difficulty)
 {
     int minCredits = g_cvMinCredits.IntValue;
     int maxCredits = g_cvMaxCredits.IntValue;
+    
+    if(minCredits > maxCredits)
+    {
+        int temp = minCredits;
+        minCredits = maxCredits;
+        maxCredits = temp;
+    }
+    
     int range = maxCredits - minCredits;
+
+    if(range <= 0)
+        return minCredits;
+    
+    int reward;
     
     switch(difficulty)
     {
         case DIFFICULTY_EASY:
-            return GetRandomInt(minCredits, minCredits + (range / 3));
+            reward = GetRandomInt(minCredits, minCredits + (range / 3));
+            
         case DIFFICULTY_MEDIUM:
-            return GetRandomInt(minCredits + (range / 3), 
-                              minCredits + ((range * 2) / 3));
+            reward = GetRandomInt(minCredits + (range / 3), 
+                                 minCredits + ((range * 2) / 3));
+            
         case DIFFICULTY_HARD:
-            return GetRandomInt(minCredits + ((range * 2) / 3), maxCredits);
+            reward = GetRandomInt(minCredits + ((range * 2) / 3), maxCredits);
+            
         default:
-            return GetRandomInt(minCredits, maxCredits);
+            reward = GetRandomInt(minCredits, maxCredits);
     }
+    
+    if(reward < minCredits)
+        reward = minCredits;
+    if(reward > maxCredits)
+        reward = maxCredits;
+        
+    return reward;
 }
 
 char[] GetDifficultyName(int difficulty)
