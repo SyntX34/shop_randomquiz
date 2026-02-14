@@ -99,8 +99,8 @@ public void OnPluginStart()
     LoadTranslations("common.phrases");
     
     g_cvEnabled = CreateConVar("sm_randomquiz_enabled", "1", "Enable/disable Random Quiz plugin", _, true, 0.0, true, 1.0);
-    g_cvMinCredits = CreateConVar("sm_randomquiz_mincredits", "50", "Minimum credits reward", _, true, 10.0);
-    g_cvMaxCredits = CreateConVar("sm_randomquiz_maxcredits", "500", "Maximum credits reward", _, true, 100.0, true, 1000.0);
+    g_cvMinCredits = CreateConVar("sm_randomquiz_mincredits", "50", "Minimum credits reward", _, true, 1.0);
+    g_cvMaxCredits = CreateConVar("sm_randomquiz_maxcredits", "500", "Maximum credits reward", _, true, 5.0, true, 1000.0);
     g_cvTimeout = CreateConVar("sm_randomquiz_timeout", "30.0", "Time in seconds to answer question", _, true, 5.0, true, 120.0);
     g_cvQuestionInterval = CreateConVar("sm_randomquiz_interval", "120.0", "Seconds between questions", _, true, 30.0, true, 600.0);
     g_cvMaxAttempts = CreateConVar("sm_randomquiz_maxattempts", "3", "Maximum attempts per question", _, true, 1.0, true, 5.0);
